@@ -1,0 +1,285 @@
+---
+title: "Results"
+author: "Erlend B. Nilsen"
+date: "29 august 2019"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+
+library(tidyverse)
+library(jsonlite)
+library(lubridate)
+library(survival)
+library(ggplot2)
+library(survminer)
+library(geosphere)
+library(maps)
+
+d <- as_tibble(read_delim("../data/Occurrence_data.txt", delim="\t", quote = ""))
+
+d <- d %>% 
+  mutate(dynamicProperties = purrr::map(dynamicProperties, ~ fromJSON(.) %>% as.data.frame())) %>% 
+  unnest(dynamicProperties) %>%
+  filter(organismName!=4272265) %>%
+  mutate(Year=year(eventDate))
+
+##############################
+##### Descriptive stats; 
+##### Number of birds that were shot, or dead due to other reasons. 
+
+Deaths <- d %>% filter(state!="alive") %>%
+          group_by(organismName, state) %>%
+          count() %>%
+          mutate(n=1) %>%
+          group_by(state) %>%
+          count()
+
+############################################################################
+#### Setting up capture history for each bird: 
+
+N_Ind <- d %>% count(organismName) %>%
+          filter(n>1)
+
+Death_cause <-  d %>% select(organismName, state, eventDate) %>%
+                 filter(state=="dead (non-harvest mortality)" | state=="dead (harvest)") %>%
+                 group_by(organismName) %>%
+                 summarise(death=min(eventDate), cause=state[1]) %>%
+                select(organismName, cause)
+
+CH_first <- d %>% group_by(organismName, Year) %>%
+            filter(event=="capture") %>%
+            summarise(Capture=min(eventDate))
+      
+CH_lastAlive <- d %>% group_by(organismName, Year) %>%
+  filter(state=="alive") %>%
+  summarise(LastAlive=max(eventDate))
+
+CH_firstAlive <- d %>% group_by(organismName, Year) %>%
+  filter(state=="alive") %>%
+  summarise(firstAlive=min(eventDate))
+
+CH_dead <- d %>% group_by(organismName, Year) %>%
+  filter(event!="capture" & state!="alive") %>%
+  summarise(Dead=min(eventDate))
+
+
+CH <- full_join(CH_first, CH_lastAlive) %>%
+      full_join(., CH_firstAlive) %>%
+      full_join(., CH_dead) %>%
+      full_join(., Death_cause) %>%
+      right_join(., N_Ind)
+
+###################################
+
+CH <- CH %>% mutate(cap_year=year(Capture), year_lastAlive=year(LastAlive), year_dead=year(Dead)) %>%
+             mutate(we_cap=week(Capture), we_lastAlive=week(LastAlive), we_firstAlive=week(firstAlive), week_death=week(Dead)+1) %>%
+             mutate(Entry_temp=we_firstAlive, Exit_temp=ifelse(is.na(week_death), we_lastAlive, round((week_death+we_lastAlive)/2)))  %>%
+             mutate(event_temp=if_else(is.na(week_death), 0, 1)) %>%
+             mutate(cause_temp=if_else(event_temp==0, "censored", cause)) 
+
+
+## THIS SECTION WILL PREPARE DATA FOR THE SPECIFIC ANALYSIS CONDUCTED HERE, ASSUMING THTAT 
+## THE CAPTURE HISTORY IS CONSTRUCTED FOR FEBRUARY 1ST - JULY 31. 
+Censor_week <- week(dmy("01-08-2012"))
+Begin_week <- week(dmy("01-02-2012"))
+
+CH <-        CH %>% filter(!is.na(Entry_temp) & Year<2014) %>%
+             mutate(entry0=Entry_temp-Begin_week, exit0=if_else(Exit_temp>Censor_week, Censor_week-Begin_week, Exit_temp-Begin_week)) %>%
+             mutate(entry=if_else(entry0<1,1,entry0), exit=exit0+1) %>%
+             mutate(event=if_else(Exit_temp>Censor_week, 0, event_temp), cause_temp2=if_else(Exit_temp>Censor_week, "censored", cause_temp)) %>%
+             mutate(cause_spec=recode(cause_temp2, "censored"=0, "dead (harvest)"=1, "dead (non-harvest mortality)"=2))
+
+## Adding age and sex 
+
+AgeSex <- d %>% mutate(Year=year(eventDate)) %>%
+          mutate(age=recode(lifeStage, "juvenile"=1, "adult"=2)) %>%
+          group_by(organismName, Year, sex) %>%
+          summarise(age=min(age))
+
+CH <- left_join(CH, AgeSex)
+
+################################################
+#### Survival analysis; 
+
+M1 <- survfit(Surv(entry, exit, event)~1, data=CH)
+summary(M1)
+
+### Testing the models; 
+M2_a <- coxph(Surv(entry, exit, event)~1, data=CH)	 
+M2_b <- coxph(Surv(entry, exit, event)~as.factor(Year), data=CH)	  
+M2_c <- coxph(Surv(entry, exit, event)~as.factor(sex), data=CH)	 
+M2_d <- coxph(Surv(entry, exit, event)~as.factor(age), data=CH)
+
+###Assessing proportional hazards assumption; 
+prop_test1 <- cox.zph(M2_b)
+prop_test2 <- cox.zph(M2_c)
+prop_test3 <- cox.zph(M2_d)
+
+#########################################################
+## Harvest mort in february; 
+## Dataset for harvest mort in February; 
+Censor_week_h <- week(dmy("01-03-2012"))-Begin_week
+
+CH_h <- CH %>% mutate(exit2=if_else(exit>Censor_week_h, Censor_week_h, exit), event2=if_else(cause_temp2=="dead (harvest)", 1, 0)) %>%
+  filter(entry<Censor_week_h)
+
+## S-analysis
+M_h <- survfit(Surv(entry, exit2, event2)~1, data=CH_h)
+summary(M_h)
+
+########################################################
+## survival from Feb 1st - April 30th
+Censor_week_e <- week(dmy("30-04-2012"))-Begin_week
+
+CH_e <- CH %>% mutate(exit2=if_else(exit>Censor_week_e, Censor_week_e, exit), event2=if_else(exit>Censor_week_e, 0,event)) 
+
+## S-analysis
+M_e <- survfit(Surv(entry, exit2, event2)~1, data=CH_e)
+summary(M_e)
+
+########################################################
+## survival from May 1st - August 1st
+Begin_week_l <- week(dmy("01-05-2012"))-Begin_week
+
+CH_l <- CH %>% mutate(entry2=Begin_week_l) %>%
+  filter(exit>Begin_week_l)
+
+## S-analysis
+M_l <- survfit(Surv(entry2, exit, event)~1, data=CH_l)
+summary(M_l)
+
+
+######################################################################
+
+Cap_sites <- d %>% filter(event=="capture") %>% 
+             select(organismName, decimalLatitude, decimalLongitude) %>%
+             rename(capLat=decimalLatitude, capLong=decimalLongitude)
+
+d <- full_join(d, Cap_sites)
+d <- d %>% mutate(replaceDist=distGeo(matrix(c(d$decimalLongitude, d$decimalLatitude), ncol=2), 
+                matrix(c(d$capLong, d$capLat), ncol=2))/1000) 
+
+d_Displace <- d %>% filter(replaceDist<10) %>%
+              mutate(Track_month=month(eventDate)) %>% 
+              select(organismName, state, event, sex, lifeStage, Track_month, eventDate, replaceDist)              
+
+temp <- d_Displace %>% group_by(organismName, state) %>%
+        filter(Track_month<9) %>%
+        summarise(last=max(Track_month)) %>%
+        mutate(state=if_else(state=="alive", "alive", "dead")) %>%
+        spread(key=state, value=last, fill=9)
+
+########################
+##### Plotting; 
+
+temp1 <- d %>% group_by(organismName) %>%
+         filter(event=="capture") %>%
+         mutate(cap_year=year(eventDate)) %>%
+         summarise(cap_year=min(cap_year)) 
+
+d <- full_join(d, temp1)
+
+d2 <- d %>% mutate(Track_week=week(eventDate), Track_year=year(eventDate)) %>%
+      mutate(temp_year=Track_year-cap_year) %>%
+      filter(temp_year==0 & Track_week<40) %>%
+      mutate(state2=if_else(state=="alive", "alive", "dead")) %>%
+      mutate(sex=recode(sex, "M"="Male", "F"= "Female"))
+
+###### 
+Cap_age_sex <- d %>% filter(event=="capture") %>%
+            select(organismName, sex, lifeStage)
+
+Max_repl <- d %>% group_by(organismName) %>%
+            summarise(max_repl=max(replaceDist)) %>%
+            left_join(., Cap_age_sex)
+
+#######
+d_max_each <- d %>% filter(state=="alive") %>%
+              mutate(Track_month=month(eventDate)) %>% 
+              mutate(New_period=cut(Track_month, breaks=c(0,3.9 , 4.1, 7, 12))) %>%
+              group_by(organismName, New_period) %>%
+              summarise(max_each=max(replaceDist)) %>%
+              group_by(New_period) %>%
+              summarise(Mean_rep=mean(max_each), sd_rep=sd(max_each),nn=n())
+
+
+
+
+```
+
+
+## Results
+
+Out of `r length(unique(d$organismName))` radio marked rock ptarmigans, `r Deaths[1,2]` were shot by hunters in the study area, and `r Deaths[2,2]` were recorded as dead due to other causes (mostly predation). The birds were marked in February and March, and we estimated the harvest mortality in the during the four weeks of February to be `r 1-round(last(summary(M_h)$surv), 2)` (SE: `r round(last(summary(M_h)$std.err), 2)`).    
+
+Based on cox proportional hazard models, we did not find any signs that of survival differences between years, or between age- and sex categories (AIC for null model: `r round(AIC(M2_a), 2)`; AIC for model including year: `r round(AIC(M2_b), 2)`; AIC for model including sex: `r round(AIC(M2_c), 2)`; AIC for model including age: `r round(AIC(M2_d), 2)`). For all models, the proportional hazards assumption was met (year-model: chi.sq=`r round(prop_test1$table[2], 2)`, p=`r round(prop_test1$table[3], 2)`; sex-model: chi.sq=`r round(prop_test2$table[2], 2)`, p=`r round(prop_test2$table[3], 2)`; age-model: chi.sq=`r round(prop_test3$table[2], 2)`, p=`r round(prop_test3$table[3], 2)`). Based on the pooled sample, probability to survive from February 1st and through July was estimated at `r round(last(summary(M1)$surv), 2)` (SE: `r round(last(summary(M1)$std.err), 2)`) (Figure 2). Survival probability for late winter to start of the breeding season (February 1st - April 30th) was estimated at `r round(last(summary(M_e)$surv), 2)` (SE: `r round(last(summary(M_e)$std.err), 2)`), whereas survival probability for the breeding season (May 1st -July 31st) was estimated at `r round(last(summary(M_l)$surv), 2)` (SE: `r round(last(summary(M_l)$std.err), 2)`).    
+
+Most of the birds captured and marked with radio collars left the area where they had been captured before the breeding season started in the spring (Figure 3). Based on the maximum displacement for birds still alive and in the sample (n=`r d_max_each$nn[2]`), mean displacement distance was estimated at `r round(d_max_each$Mean_rep[2], 1)` (SD: `r round(d_max_each$sd_rep[2], 1)`)km in April. In a pooled sample for May-July, the displacement for birds still alive and in the sample (n=`r d_max_each$nn[3]`) was estimated at `r round(d_max_each$Mean_rep[3], 1)` (SD: `r round(d_max_each$sd_rep[3], 1)`)km. We note that this is probably an underestimation, because we are more likely to have lost contact with birds that moved long distances. The maximum recorded movement from the capture site was `r round(max(Max_repl$max_repl), 1)` km. A total of `r count(filter(Max_repl, max_repl>50))` birds moved longer than 50 km, of which `r count(filter(Max_repl, max_repl>50 & sex=="M"))` were males and `r count(filter(Max_repl, max_repl>50 & sex=="F"))` were females. For `r count(filter(Max_repl, max_repl>25))` birds, we detected movements longer than 25 km from the capture site, including `r count(filter(Max_repl, max_repl>25 & sex=="M"))` males and `r count(filter(Max_repl, max_repl>25 & sex=="F"))` females.  
+
+
+## FIGURE LEGENDS:
+
+*Figure 1:* Map of the study area, with Norway marked in orange and the study area marked with a red circle. 
+
+*Figure 2:* Kaplan-Meyer survival curve for a sample of rock ptarmigans radio collared in Central Norway in 2012-2013. The time on the x-axis is shifted so that week 1 represent the first week in February each year, whereas week 31 is the last week in July. Lower table depicts the number at risk throughout the study period. 
+
+*Figure 3:* Linear displacement from the capture site plotted agains week. Each line represent the trajectory for one individual bird, and red crosses indicates death events.  
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+
+
+study_site <- d %>% summarise(long=mean(decimalLongitude), lat=mean(decimalLatitude))
+
+ggplot() + 
+  xlim(-20, 50)+
+  ylim(40, 80) +
+  borders("world", fill="grey60") +
+  borders(regions = "Norway(?!:Svalbard)", colour = "gray50", fill = "orange") +
+  geom_point(data=study_site, aes(x=long, y=lat), col="dark red") + 
+
+  theme_bw()
+
+```
+*Figure 1*
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+ggsurvplot(M1, legend="none", 
+           xlab="Week (since Feb. 1st)",
+           risk.table = T, 
+           tables.height = 0.2,
+           risk.table.fontsize=3,
+           tables.theme = theme_cleantable(),
+           tables.y.text=FALSE,
+           ggtheme = theme_bw(), 
+           palette = c("#E7B800"))
+
+```
+*Figure 2*
+
+
+```{r echo=FALSE, message=FALSE}
+
+      p2 <- ggplot(data=d2, aes(x=Track_week, y=replaceDist, group=organismName)) +
+      geom_line(linetype=2, col="#E7B800") + 
+      geom_point(colour="dark red", shape=3, data=(filter(d2, state2=="dead")))
+
+p2 + theme (legend.position = "none") + facet_wrap(~Year, labeller="label_both") +
+xlab("Week of the year") +
+ylab("Distance to capture location (km)") 
+
+```
+*Figure 3*
+
+
+
+
+
