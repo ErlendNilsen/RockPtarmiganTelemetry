@@ -1,7 +1,7 @@
 ---
 title: "Results"
 author: "Erlend B. Nilsen"
-date: "29 august 2019"
+date: "September 17th 2019"
 output: word_document
 ---
 
@@ -12,6 +12,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ```{r, echo=FALSE, message=FALSE, warning=FALSE, include=FALSE}
 
+## First, loading neccesary libraries
 library(tidyverse)
 library(jsonlite)
 library(lubridate)
@@ -21,7 +22,19 @@ library(survminer)
 library(geosphere)
 library(maps)
 
-d <- as_tibble(read_delim("../data/Occurrence_data.txt", delim="\t", quote = ""))
+######################################################################################
+## ACCESSING FILE FROM GBIF; 
+## Add folder "data" to working dir. 
+
+datasetID <- "b848f1f3-3955-4725-8ad8-e711e4a9e0ac"
+dataset <- RJSONIO::fromJSON(paste0("http://api.gbif.org/v1/dataset/",datasetID,"/endpoint"))
+endpoint_url <- dataset[[1]]$url 
+download.file(endpoint_url, destfile="data/temp.zip", mode="wb")
+unzip ("data/temp.zip", exdir = "data")
+
+d <- as_tibble(read_delim("data/Occurrence.txt", delim="\t", quote = ""))
+
+######################################################################################
 
 d <- d %>% 
   mutate(dynamicProperties = purrr::map(dynamicProperties, ~ fromJSON(.) %>% as.data.frame())) %>% 
@@ -110,11 +123,40 @@ CH <- left_join(CH, AgeSex)
 M1 <- survfit(Surv(entry, exit, event)~1, data=CH)
 summary(M1)
 
+## USING THE COMPEETING RISK FORMULTION TO ESTIMATE
+## NON HARVEXT MORTALITY RATE; 
+source("../cause_survival_GROUSE.r")
+CH_cause <- CH %>% mutate(cause3=cause_spec, ent=entry) 
+M2 <- cause.survival(CH_cause, 2)	
+
+
+####################################################################################################################################################
+## TO MAKE STRATIFICATION POSSIBLE WE TRANSFORM THE DATA FOLLOWING DESCRIPTIONS GIVEN IN HEISEY & PATTERSON 2006; J Wildl Mgmnt, 70(6): 1544-1555).
+####################################################################################################################################################   
+
+temp1 <- CH									# Making shot-strata	
+temp1 <- transform(temp1, event2=ifelse(cause_spec==1, 1,0))	# Making variable "Event2"; 1 if cause of death is "Shot", 0 otherwise (i.e. Alive or other causes of death))
+cause4 <- rep(1,n=length(temp1[1]))				# making varible "Cause4"; a column containing only 1's 	
+temp1 <- cbind(temp1, cause4)						# merging dataset (so far - called "temp1") array "Cause4"
+strata <- rep(1, n=length(temp1[1]))			# making variable strate (a column with only 1's) - representing the harvesting strata
+temp1 <- cbind(temp1, strata)						# merging data set ("temp1") with new array "strata"	
+
+temp2 <- CH									# making other-strata
+temp2 <- transform(temp2, event2=ifelse(cause_spec==2, 1,0))	# same as for strata above; but "cause4" and "strata" is set to 2 - to represent "other-strata"
+cause4 <- rep(2,n=length(temp2[1]))
+temp2 <- cbind(temp2, cause4)
+strata <- rep(2, n=length(temp2[1]))
+temp2 <- cbind(temp2, strata)
+
+
+CH2 <- rbind(temp1, temp2)							# merging the two data tables above - 
+CH2a <- CH2 %>% filter(cause4==2)
+
 ### Testing the models; 
-M2_a <- coxph(Surv(entry, exit, event)~1, data=CH)	 
-M2_b <- coxph(Surv(entry, exit, event)~as.factor(Year), data=CH)	  
-M2_c <- coxph(Surv(entry, exit, event)~as.factor(sex), data=CH)	 
-M2_d <- coxph(Surv(entry, exit, event)~as.factor(age), data=CH)
+M2_a <- coxph(Surv(entry, exit, event2)~1, data=CH2a)	 
+M2_b <- coxph(Surv(entry, exit, event2)~as.factor(Year), data=CH2a)	  
+M2_c <- coxph(Surv(entry, exit, event2)~as.factor(sex), data=CH2a)	 
+M2_d <- coxph(Surv(entry, exit, event2)~as.factor(age), data=CH2a)
 
 ###Assessing proportional hazards assumption; 
 prop_test1 <- cox.zph(M2_b)
@@ -142,6 +184,9 @@ CH_e <- CH %>% mutate(exit2=if_else(exit>Censor_week_e, Censor_week_e, exit), ev
 ## S-analysis
 M_e <- survfit(Surv(entry, exit2, event2)~1, data=CH_e)
 summary(M_e)
+
+CH_cause <- CH_e %>% mutate(cause3=cause_spec, ent=entry, exit=exit2, event=event2) 
+M_e2 <- cause.survival(CH_cause, 2)	
 
 ########################################################
 ## survival from May 1st - August 1st
@@ -216,11 +261,11 @@ d_max_each <- d %>% filter(state=="alive") %>%
 
 ## Results
 
-Out of `r length(unique(d$organismName))` radio marked rock ptarmigans, `r Deaths[1,2]` were shot by hunters in the study area, and `r Deaths[2,2]` were recorded as dead due to other causes (mostly predation). The birds were marked in February and March, and we estimated the harvest mortality in the during the four weeks of February to be `r 1-round(last(summary(M_h)$surv), 2)` (SE: `r round(last(summary(M_h)$std.err), 2)`).    
+Out of `r length(unique(d$organismName))` radio marked rock ptarmigans, `r Deaths[1,2]` were shot by hunters in the study area, and `r Deaths[2,2]` were recorded as dead due to other causes (mostly predation). The birds were marked in February and March, and we estimated the harvest mortality during the four weeks of February to be `r 1-round(last(summary(M_h)$surv), 2)` (SE: `r round(last(summary(M_h)$std.err), 2)`).    
 
-Based on cox proportional hazard models, we did not find any signs that of survival differences between years, or between age- and sex categories (AIC for null model: `r round(AIC(M2_a), 2)`; AIC for model including year: `r round(AIC(M2_b), 2)`; AIC for model including sex: `r round(AIC(M2_c), 2)`; AIC for model including age: `r round(AIC(M2_d), 2)`). For all models, the proportional hazards assumption was met (year-model: chi.sq=`r round(prop_test1$table[2], 2)`, p=`r round(prop_test1$table[3], 2)`; sex-model: chi.sq=`r round(prop_test2$table[2], 2)`, p=`r round(prop_test2$table[3], 2)`; age-model: chi.sq=`r round(prop_test3$table[2], 2)`, p=`r round(prop_test3$table[3], 2)`). Based on the pooled sample, probability to survive from February 1st and through July was estimated at `r round(last(summary(M1)$surv), 2)` (SE: `r round(last(summary(M1)$std.err), 2)`) (Figure 2). Survival probability for late winter to start of the breeding season (February 1st - April 30th) was estimated at `r round(last(summary(M_e)$surv), 2)` (SE: `r round(last(summary(M_e)$std.err), 2)`), whereas survival probability for the breeding season (May 1st -July 31st) was estimated at `r round(last(summary(M_l)$surv), 2)` (SE: `r round(last(summary(M_l)$std.err), 2)`).    
+Based on cox proportional hazard models, we did not find any signs that natural survival differed between years, or between age- and sex categories (AIC for null model: `r round(AIC(M2_a), 2)`; AIC for model including year: `r round(AIC(M2_b), 2)`; AIC for model including sex: `r round(AIC(M2_c), 2)`; AIC for model including age: `r round(AIC(M2_d), 2)`). For all models, the proportional hazards assumption was met (year-model: chi.sq=`r round(prop_test1$table[2], 2)`, p=`r round(prop_test1$table[3], 2)`; sex-model: chi.sq=`r round(prop_test2$table[2], 2)`, p=`r round(prop_test2$table[3], 2)`; age-model: chi.sq=`r round(prop_test3$table[2], 2)`, p=`r round(prop_test3$table[3], 2)`). Based on the pooled sample, overall probability to survive from February 1st and through July was estimated at `r round(last(summary(M1)$surv), 2)` (SE: `r round(last(summary(M1)$std.err), 2)`) (**Figure 2**), with natural survival (i.e. disregarding birds that were shot by hunters during the harvest season) estimated at `r 1-round(last(M2$CIF),2)` (SE: `r round(as.numeric(last(M2$StdErr)),2)`). Survival probability for late winter to start of the breeding season (February 1st - April 30th) was estimated at `r round(last(summary(M_e)$surv), 2)` (SE: `r round(last(summary(M_e)$std.err), 2)`), with natural survival estimated at `r 1-round(last(M_e2$CIF),2)` (SE: `r round(as.numeric(last(M_e2$StdErr)),2)`). Survival probability for the breeding season (May 1st -July 31st) was estimated at `r round(last(summary(M_l)$surv), 2)` (SE: `r round(last(summary(M_l)$std.err), 2)`).    
 
-Most of the birds captured and marked with radio collars left the area where they had been captured before the breeding season started in the spring (Figure 3). Based on the maximum displacement for birds still alive and in the sample (n=`r d_max_each$nn[2]`), mean displacement distance was estimated at `r round(d_max_each$Mean_rep[2], 1)` (SD: `r round(d_max_each$sd_rep[2], 1)`)km in April. In a pooled sample for May-July, the displacement for birds still alive and in the sample (n=`r d_max_each$nn[3]`) was estimated at `r round(d_max_each$Mean_rep[3], 1)` (SD: `r round(d_max_each$sd_rep[3], 1)`)km. We note that this is probably an underestimation, because we are more likely to have lost contact with birds that moved long distances. The maximum recorded movement from the capture site was `r round(max(Max_repl$max_repl), 1)` km. A total of `r count(filter(Max_repl, max_repl>50))` birds moved longer than 50 km, of which `r count(filter(Max_repl, max_repl>50 & sex=="M"))` were males and `r count(filter(Max_repl, max_repl>50 & sex=="F"))` were females. For `r count(filter(Max_repl, max_repl>25))` birds, we detected movements longer than 25 km from the capture site, including `r count(filter(Max_repl, max_repl>25 & sex=="M"))` males and `r count(filter(Max_repl, max_repl>25 & sex=="F"))` females.  
+Most of the birds captured and marked with radio collars left the area where they had been captured before the breeding season started in the spring (**Figure 3**). Based on the maximum displacement for birds still alive and in the sample (n=`r d_max_each$nn[2]`), mean displacement distance was estimated at `r round(d_max_each$Mean_rep[2], 1)` (SD: `r round(d_max_each$sd_rep[2], 1)`)km in April. In a pooled sample for May-July, the displacement for birds still alive and in the sample (n=`r d_max_each$nn[3]`) was estimated at `r round(d_max_each$Mean_rep[3], 1)` (SD: `r round(d_max_each$sd_rep[3], 1)`)km. We note that this is probably an underestimation, because we are more likely to have lost contact with birds that moved long distances. The maximum recorded movement from the capture site was `r round(max(Max_repl$max_repl), 1)` km. A total of `r count(filter(Max_repl, max_repl>50))` birds moved longer than 50 km, of which `r count(filter(Max_repl, max_repl>50 & sex=="M"))` were males and `r count(filter(Max_repl, max_repl>50 & sex=="F"))` were females. For `r count(filter(Max_repl, max_repl>25))` birds, we detected movements longer than 25 km from the capture site, including `r count(filter(Max_repl, max_repl>25 & sex=="M"))` males and `r count(filter(Max_repl, max_repl>25 & sex=="F"))` females.  
 
 
 ## FIGURE LEGENDS:
@@ -245,6 +290,7 @@ ggplot() +
   geom_point(data=study_site, aes(x=long, y=lat), col="dark red") + 
 
   theme_bw()
+ggsave("../figures/Figure1.jpg", plot=last_plot(), width = 5, height = 5)
 
 ```
 *Figure 1*
@@ -252,7 +298,7 @@ ggplot() +
 
 ```{r echo=FALSE, message=FALSE, warning=FALSE}
 
-ggsurvplot(M1, legend="none", 
+p <- ggsurvplot(M1, legend="none", 
            xlab="Week (since Feb. 1st)",
            risk.table = T, 
            tables.height = 0.2,
@@ -261,6 +307,10 @@ ggsurvplot(M1, legend="none",
            tables.y.text=FALSE,
            ggtheme = theme_bw(), 
            palette = c("#E7B800"))
+p
+
+ggsave("../figures/Figure2.jpg", width = 5, height = 5, print(p))
+
 
 ```
 *Figure 2*
@@ -275,6 +325,9 @@ ggsurvplot(M1, legend="none",
 p2 + theme (legend.position = "none") + facet_wrap(~Year, labeller="label_both") +
 xlab("Week of the year") +
 ylab("Distance to capture location (km)") 
+
+ggsave("../figures/Figure3.jpg", plot=last_plot(), width = 5, height = 5)
+
 
 ```
 *Figure 3*
