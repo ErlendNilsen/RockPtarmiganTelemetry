@@ -1,7 +1,7 @@
 ---
 title: "Results"
 author: "Erlend B. Nilsen"
-date: "September 17th 2019"
+date: "January 21st 2020"
 output: word_document
 ---
 
@@ -21,6 +21,8 @@ library(ggplot2)
 library(survminer)
 library(geosphere)
 library(maps)
+source("../cause_survival_GROUSE.r")
+
 
 ######################################################################################
 ## ACCESSING FILE FROM GBIF; 
@@ -94,7 +96,7 @@ CH <- CH %>% mutate(cap_year=year(Capture), year_lastAlive=year(LastAlive), year
              mutate(we_cap=week(Capture), we_lastAlive=week(LastAlive), we_firstAlive=week(firstAlive), week_death=week(Dead)+1) %>%
              mutate(Entry_temp=we_firstAlive, Exit_temp=ifelse(is.na(week_death), we_lastAlive, round((week_death+we_lastAlive)/2)))  %>%
              mutate(event_temp=if_else(is.na(week_death), 0, 1)) %>%
-             mutate(cause_temp=if_else(event_temp==0, "censored", cause)) 
+             mutate(cause_temp=if_else(event_temp==0, "censored", paste(cause))) 
 
 
 ## THIS SECTION WILL PREPARE DATA FOR THE SPECIFIC ANALYSIS CONDUCTED HERE, ASSUMING THTAT 
@@ -117,6 +119,18 @@ AgeSex <- d %>% mutate(Year=year(eventDate)) %>%
 
 CH <- left_join(CH, AgeSex)
 
+
+## Adding weigth (from table "measurementorfact.txt)
+
+d_Morph <- as_tibble(read_delim("data/measurementorfact.txt", delim="\t", quote = "")) %>% 
+           rename(occurrenceID=id) %>% filter(measurementType=="weigth") %>%
+           left_join(., d) %>% 
+           select(organismID, organismName, occurrenceID, measurementValue) %>%
+          rename(weigth=measurementValue)
+
+
+CH <- left_join(CH, d_Morph)
+
 ################################################
 #### Survival analysis; 
 
@@ -125,7 +139,6 @@ summary(M1)
 
 ## USING THE COMPEETING RISK FORMULTION TO ESTIMATE
 ## NON HARVEXT MORTALITY RATE; 
-source("../cause_survival_GROUSE.r")
 CH_cause <- CH %>% mutate(cause3=cause_spec, ent=entry) 
 M2 <- cause.survival(CH_cause, 2)	
 
@@ -157,11 +170,22 @@ M2_a <- coxph(Surv(entry, exit, event2)~1, data=CH2a)
 M2_b <- coxph(Surv(entry, exit, event2)~as.factor(Year), data=CH2a)	  
 M2_c <- coxph(Surv(entry, exit, event2)~as.factor(sex), data=CH2a)	 
 M2_d <- coxph(Surv(entry, exit, event2)~as.factor(age), data=CH2a)
+M2_e <- coxph(Surv(entry, exit, event2)~weigth, data=CH2a)
+M2_f <- coxph(Surv(entry, exit, event2)~as.factor(sex)+weigth, data=CH2a)
+M2_g <- coxph(Surv(entry, exit, event2)~as.factor(age)+weigth, data=CH2a)
+
+
+
 
 ###Assessing proportional hazards assumption; 
 prop_test1 <- cox.zph(M2_b)
 prop_test2 <- cox.zph(M2_c)
 prop_test3 <- cox.zph(M2_d)
+prop_test4 <- cox.zph(M2_e)
+prop_test5 <- cox.zph(M2_f)
+prop_test6 <- cox.zph(M2_f)
+
+
 
 #########################################################
 ## Harvest mort in february; 
@@ -263,34 +287,116 @@ d_max_each <- d %>% filter(state=="alive") %>%
 
 Out of `r length(unique(d$organismName))` radio marked rock ptarmigans, `r Deaths[1,2]` were shot by hunters in the study area, and `r Deaths[2,2]` were recorded as dead due to other causes (mostly predation). The birds were marked in February and March, and we estimated the harvest mortality during the four weeks of February to be `r 1-round(last(summary(M_h)$surv), 2)` (SE: `r round(last(summary(M_h)$std.err), 2)`).    
 
-Based on cox proportional hazard models, we did not find any signs that natural survival differed between years, or between age- and sex categories (AIC for null model: `r round(AIC(M2_a), 2)`; AIC for model including year: `r round(AIC(M2_b), 2)`; AIC for model including sex: `r round(AIC(M2_c), 2)`; AIC for model including age: `r round(AIC(M2_d), 2)`). For all models, the proportional hazards assumption was met (year-model: chi.sq=`r round(prop_test1$table[2], 2)`, p=`r round(prop_test1$table[3], 2)`; sex-model: chi.sq=`r round(prop_test2$table[2], 2)`, p=`r round(prop_test2$table[3], 2)`; age-model: chi.sq=`r round(prop_test3$table[2], 2)`, p=`r round(prop_test3$table[3], 2)`). Based on the pooled sample, overall probability to survive from February 1st and through July was estimated at `r round(last(summary(M1)$surv), 2)` (SE: `r round(last(summary(M1)$std.err), 2)`) (**Figure 2**), with natural survival (i.e. disregarding birds that were shot by hunters during the harvest season) estimated at `r 1-round(last(M2$CIF),2)` (SE: `r round(as.numeric(last(M2$StdErr)),2)`). Survival probability for late winter to start of the breeding season (February 1st - April 30th) was estimated at `r round(last(summary(M_e)$surv), 2)` (SE: `r round(last(summary(M_e)$std.err), 2)`), with natural survival estimated at `r 1-round(last(M_e2$CIF),2)` (SE: `r round(as.numeric(last(M_e2$StdErr)),2)`). Survival probability for the breeding season (May 1st -July 31st) was estimated at `r round(last(summary(M_l)$surv), 2)` (SE: `r round(last(summary(M_l)$std.err), 2)`).    
+Based on cox proportional hazard models, we did not find any clear evidence that survival differed between years, or between age- and sex categories (**Table 1**). Moreover, we did not detect any effects of weight (at capture) on the the mortality risk, whether we controlled for potential confounding effects of age- and sex or not (**Table 1**). For all models, the proportional hazards assumption was met (year-model: chi.sq=`r round(prop_test1$table[2], 2)`, p=`r round(prop_test1$table[3], 2)`; sex-model: chi.sq=`r round(prop_test2$table[2], 2)`, p=`r round(prop_test2$table[3], 2)`; age-model: chi.sq=`r round(prop_test3$table[2], 2)`, p=`r round(prop_test3$table[3], 2)`: weight-model: chi.sq=`r round(prop_test4$table[2], 2)`, p=`r round(prop_test4$table[3], 2)`; weight-sex model: global p=`r round(prop_test5$table[3,3], 2)`; weight-age model: global p=`r round(prop_test6$table[3,3], 2)`). Based on the pooled sample, overall probability to survive from February 1st and through July was estimated at `r round(last(summary(M1)$surv), 2)` (SE: `r round(last(summary(M1)$std.err), 2)`) (**Figure 2**), with natural survival (i.e. disregarding birds that were shot by hunters during the harvest season) estimated at `r 1-round(last(M2$CIF),2)` (SE: `r round(as.numeric(last(M2$StdErr)),2)`). Survival probability for late winter to start of the breeding season (February 1st - April 30th) was estimated at `r round(last(summary(M_e)$surv), 2)` (SE: `r round(last(summary(M_e)$std.err), 2)`), with natural survival estimated at `r 1-round(last(M_e2$CIF),2)` (SE: `r round(as.numeric(last(M_e2$StdErr)),2)`). Survival probability for the breeding season (May 1st -July 31st) was estimated at `r round(last(summary(M_l)$surv), 2)` (SE: `r round(last(summary(M_l)$std.err), 2)`).    
 
 Most of the birds captured and marked with radio collars left the area where they had been captured before the breeding season started in the spring (**Figure 3**). Based on the maximum displacement for birds still alive and in the sample (n=`r d_max_each$nn[2]`), mean displacement distance was estimated at `r round(d_max_each$Mean_rep[2], 1)` (SD: `r round(d_max_each$sd_rep[2], 1)`)km in April. In a pooled sample for May-July, the displacement for birds still alive and in the sample (n=`r d_max_each$nn[3]`) was estimated at `r round(d_max_each$Mean_rep[3], 1)` (SD: `r round(d_max_each$sd_rep[3], 1)`)km. We note that this is probably an underestimation, because we are more likely to have lost contact with birds that moved long distances. The maximum recorded movement from the capture site was `r round(max(Max_repl$max_repl), 1)` km. A total of `r count(filter(Max_repl, max_repl>50))` birds moved longer than 50 km, of which `r count(filter(Max_repl, max_repl>50 & sex=="M"))` were males and `r count(filter(Max_repl, max_repl>50 & sex=="F"))` were females. For `r count(filter(Max_repl, max_repl>25))` birds, we detected movements longer than 25 km from the capture site, including `r count(filter(Max_repl, max_repl>25 & sex=="M"))` males and `r count(filter(Max_repl, max_repl>25 & sex=="F"))` females.  
 
 
-## FIGURE LEGENDS:
+## Tables
 
-*Figure 1:* Map of the study area, with Norway marked in orange and the study area marked with a red circle. 
+**Table 1** Results from cox-proportional hazard models used to test for differences in survival between sex- and age-classes, as well as between years. K is the number of parameters in the model. A total of n=84 birds were included in the analysis.  
 
-*Figure 2:* Kaplan-Meyer survival curve for a sample of rock ptarmigans radio collared in Central Norway in 2012-2013. The time on the x-axis is shifted so that week 1 represent the first week in February each year, whereas week 31 is the last week in July. Lower table depicts the number at risk throughout the study period. 
-
-*Figure 3:* Linear displacement from the capture site plotted agains week. Each line represent the trajectory for one individual bird, and red crosses indicates death events.  
 
 ```{r echo=FALSE, message=FALSE, warning=FALSE}
 
+M_list <- list("M2_a"=M2_a, "M2_b"=M2_b, "M2_c"=M2_c, "M2_d"=M2_d, "M2_e"=M2_e, "M2_f"=M2_f, "M2_g"=M2_g)
+temp <- as_tibble(AICcmodavg::aictab(M_list, modnames=c("Intercept only", "S(year)", "S(sex)", "S(age)", "S(weight)", "S(weight + sex)", "S(weight + age"))) %>% select(-LL, -ModelLik)
 
+knitr::kable(temp, digits=2)
+
+```
+
+
+
+
+## FIGURE LEGENDS:
+
+**Figure 1:** Map of the study area. Inset map: Norway marked in orange, and study area marked with a red rectangle. In the main map, areas below 650 m.a.s.l. is marked in green, and areas above 650 (corresponding roughly to habitats used by rock ptarmigan) is grey shaded by elevation. The border between Norway (west) and Sweden (east) is marked with a red line. Captures and relocations of rock ptarmigan is marked with black dots.    
+
+**Figure 2:** Kaplan-Meyer survival curve for a sample of rock ptarmigan radio collared in Central Norway in 2012-2013. The time on the x-axis is shifted so that week 1 represent the first week in February each year, whereas week 31 is the last week in July. Lower table depicts the number at risk (i.e. time-specific sample sizes) throughout the study period. 
+
+**Figure 3:** Linear displacement from the capture site plotted against week. Each line represent the trajectory for one individual bird (n=82 birds, for which we had at least two positions), and red crosses indicates death events.      
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.width=8, fig.height=6}
+
+
+#############################################################
+### Map - FIGURE 1; 
+library(sp)
+library(elevatr)
+library(ggthemes)
+library(maptools)
+library(osmdata)
+library(raster)
+library(cowplot)
+
+
+## For plotting of borders; 
+Norway <-getData("GADM", country="NO", level=0)
+Norway_df <- fortify(Norway)
+
+crs_temp_longlat <- CRS("+proj=longlat +ellps=WGS84 +datum=WGS84")
+
+
+## Map bounding box
+my_bbox <- c(xmin = min(d$decimalLongitude)-0.2,
+             xmax = max(d$decimalLongitude)+0.2,
+             ymin = min(d$decimalLatitude)-0.2,
+             ymax = max(d$decimalLatitude)+0.2)
+
+temp <- as(extent(my_bbox), 'SpatialPolygons')
+proj4string(temp) <- crs_temp_longlat
+
+## Getting DEM - data
+elev1 <- get_elev_raster(locations=temp, z = 7, clip="bbox")
+
+test_spdf <- as(elev1, "SpatialPixelsDataFrame")
+test_df <- as_tibble(test_spdf) %>% rename(value=layer, long=x, lat=y) %>%
+  mutate(Elevation=ifelse(value>650, value, NA))
+
+
+### Large scale map; 
 
 study_site <- d %>% summarise(long=mean(decimalLongitude), lat=mean(decimalLatitude))
+Poly_dat <- data.frame(x=c(12.7, 12.7, 14.6, 14.6), y=c(64, 64.7, 64.7, 64))
 
-ggplot() + 
-  xlim(-20, 50)+
-  ylim(40, 80) +
-  borders("world", fill="grey60") +
-  borders(regions = "Norway(?!:Svalbard)", colour = "gray50", fill = "orange") +
-  geom_point(data=study_site, aes(x=long, y=lat), col="dark red") + 
 
-  theme_bw()
-ggsave("../figures/Figure1.jpg", plot=last_plot(), width = 5, height = 5)
+
+m1 <- ggplot() + 
+  xlim(2, 32)+
+  ylim(57, 72) +
+  borders(regions = "Norway(?!:Svalbard)", colour = "gray70", fill = "orange") +
+  geom_polygon(data=Poly_dat, aes(x=x, y=y), alpha = 0.2, colour="dark red", size=1.4) +
+  xlab("") +
+  ylab("") + 
+  theme_map() + theme(text=element_text(size=12))
+
+#m1
+
+##############################
+m2 <- ggplot() +
+  xlim(12.6, 14.7) +
+  ylim(63.95, 64.9) +
+  xlab("Longitude") + 
+  ylab("Latitude") +
+  geom_raster(data=test_df, aes(x=long, y=lat, fill=Elevation), interpolate=TRUE) + 
+  scale_fill_gradientn(colours=grey(seq(1,0.2,l=20)), na.value = "olivedrab4") +
+  geom_point(data=d, aes(x=decimalLongitude, y=decimalLatitude), 
+             col="black", size=2, alpha=0.5) +
+  geom_path(data=Norway, aes(x=long, y=lat), col="dark red", size=1.5, alpha=0.5) + 
+  theme_minimal()+ theme(text=element_text(size=12)) + 
+  ggsn::scalebar(x.min=12.6, x.max=14.7, y.min=63.95, y.max=64.9, dist=10, model = 'WGS84', transform = TRUE,
+                 dist_unit="km", height=0.02, st.dist=0.03, st.size=4, st.bottom = FALSE, border.size=1, anchor =c(x=14.62, y=63.97))
+
+##############################
+## Putting together; 
+gg_inset_map1 <- ggdraw() +
+  draw_plot(m2, width=0.9, height=0.85) +
+  draw_plot(m1, x = 0.05, y = 0.65, width = 0.3, height = 0.3) 
+
+gg_inset_map1
+
+ggsave("../figures/Figure1.jpg", plot=last_plot(), width = 8, height = 7) 
 
 ```
 *Figure 1*
