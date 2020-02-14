@@ -21,6 +21,15 @@ library(ggplot2)
 library(survminer)
 library(geosphere)
 library(maps)
+library(RJSONIO)
+library(purrr)
+library(sp)
+library(elevatr)
+library(ggthemes)
+library(maptools)
+library(osmdata)
+library(raster)
+library(cowplot)
 source("../cause_survival_GROUSE.r")
 
 
@@ -39,7 +48,7 @@ d <- as_tibble(read_delim("data/Occurrence.txt", delim="\t", quote = ""))
 ######################################################################################
 
 d <- d %>% 
-  mutate(dynamicProperties = purrr::map(dynamicProperties, ~ fromJSON(.) %>% as.data.frame())) %>% 
+  mutate(dynamicProperties = purrr::map(dynamicProperties, ~ jsonlite::fromJSON(.) %>% as.data.frame())) %>% 
   unnest(dynamicProperties) %>%
   filter(organismName!=4272265) %>%
   mutate(Year=year(eventDate))
@@ -61,11 +70,11 @@ Deaths <- d %>% filter(state!="alive") %>%
 N_Ind <- d %>% count(organismName) %>%
           filter(n>1)
 
-Death_cause <-  d %>% select(organismName, state, eventDate) %>%
+Death_cause <-  d %>% dplyr::select(organismName, state, eventDate) %>%
                  filter(state=="dead (non-harvest mortality)" | state=="dead (harvest)") %>%
                  group_by(organismName) %>%
                  summarise(death=min(eventDate), cause=state[1]) %>%
-                select(organismName, cause)
+                dplyr::select(organismName, cause)
 
 CH_first <- d %>% group_by(organismName, Year) %>%
             filter(event=="capture") %>%
@@ -125,7 +134,7 @@ CH <- left_join(CH, AgeSex)
 d_Morph <- as_tibble(read_delim("data/measurementorfact.txt", delim="\t", quote = "")) %>% 
            rename(occurrenceID=id) %>% filter(measurementType=="weigth") %>%
            left_join(., d) %>% 
-           select(organismID, organismName, occurrenceID, measurementValue) %>%
+           dplyr::select(organismID, organismName, occurrenceID, measurementValue) %>%
           rename(weigth=measurementValue)
 
 
@@ -227,7 +236,7 @@ summary(M_l)
 ######################################################################
 
 Cap_sites <- d %>% filter(event=="capture") %>% 
-             select(organismName, decimalLatitude, decimalLongitude) %>%
+             dplyr::select(organismName, decimalLatitude, decimalLongitude) %>%
              rename(capLat=decimalLatitude, capLong=decimalLongitude)
 
 d <- full_join(d, Cap_sites)
@@ -236,7 +245,7 @@ d <- d %>% mutate(replaceDist=distGeo(matrix(c(d$decimalLongitude, d$decimalLati
 
 d_Displace <- d %>% filter(replaceDist<10) %>%
               mutate(Track_month=month(eventDate)) %>% 
-              select(organismName, state, event, sex, lifeStage, Track_month, eventDate, replaceDist)              
+              dplyr::select(organismName, state, event, sex, lifeStage, Track_month, eventDate, replaceDist)              
 
 temp <- d_Displace %>% group_by(organismName, state) %>%
         filter(Track_month<9) %>%
@@ -262,7 +271,7 @@ d2 <- d %>% mutate(Track_week=week(eventDate), Track_year=year(eventDate)) %>%
 
 ###### 
 Cap_age_sex <- d %>% filter(event=="capture") %>%
-            select(organismName, sex, lifeStage)
+            dplyr::select(organismName, sex, lifeStage)
 
 Max_repl <- d %>% group_by(organismName) %>%
             summarise(max_repl=max(replaceDist)) %>%
@@ -300,7 +309,8 @@ Most of the birds captured and marked with radio collars left the area where the
 ```{r echo=FALSE, message=FALSE, warning=FALSE}
 
 M_list <- list("M2_a"=M2_a, "M2_b"=M2_b, "M2_c"=M2_c, "M2_d"=M2_d, "M2_e"=M2_e, "M2_f"=M2_f, "M2_g"=M2_g)
-temp <- as_tibble(AICcmodavg::aictab(M_list, modnames=c("Intercept only", "S(year)", "S(sex)", "S(age)", "S(weight)", "S(weight + sex)", "S(weight + age"))) %>% select(-LL, -ModelLik)
+temp <- as_tibble(AICcmodavg::aictab(M_list, modnames=c("Intercept only", "S(year)", "S(sex)", "S(age)", "S(weight)", "S(weight + sex)", "S(weight + age"))) %>% 
+  dplyr::select(-LL, -ModelLik)
 
 knitr::kable(temp, digits=2)
 
@@ -322,13 +332,7 @@ knitr::kable(temp, digits=2)
 
 #############################################################
 ### Map - FIGURE 1; 
-library(sp)
-library(elevatr)
-library(ggthemes)
-library(maptools)
-library(osmdata)
-library(raster)
-library(cowplot)
+
 
 
 ## For plotting of borders; 
